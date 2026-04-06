@@ -291,7 +291,7 @@ SKIP: <reason>"
                  (let* ((bar-pos (search "| " systems-line
                                          :start2 (+ (search "systems" systems-line) 7)))
                         (value (when bar-pos
-                                 (string-trim '(#\Space #\| #\Tab)
+                                 (string-trim (list #\Space (code-char 124) #\Tab)
                                               (subseq systems-line (+ bar-pos 2))))))
                    (and value (plusp (length value)))))
             :repo-ok
@@ -757,7 +757,7 @@ SOFTWARE.
     (list :issues-processed (length issues)
           :repos-created (length created-systems)
           :highest-issue highest-issue
-          :new-systems created-systems)))
+          :new-systems created-systems))
 
 ;;; ─── Query Handlers ────────────────────────────────────────────────────────
 
