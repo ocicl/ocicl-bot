@@ -18,18 +18,56 @@ For each new issue:
 
 All steps are durable -- if the process crashes mid-batch, restarting replays completed steps and resumes at the next one.
 
-## Prerequisites
+## Setup
 
-1. GitHub App "ocicl-bot" installed on the ocicl org
-2. App private key at `~/.ocicl/app-key.pem`
-3. [Gemini CLI](https://github.com/google-gemini/gemini-cli) for LLM parsing
+```bash
+# One-time setup
+mkdir -p ~/.local/etc/ocicl-bot ~/.local/share/ocicl-bot
+cp app-key.pem ~/.local/etc/ocicl-bot/
+echo 0 > ~/.local/etc/ocicl-bot/cursor
+
+# Build the container
+podman build -t ocicl-bot -f Containerfile .
+```
 
 ## Usage
 
+```bash
+# Run once (processes new issues since last cursor position)
+./ocicl-bot-run.sh
+
+# Or via cron (daily at 8am)
+# crontab -e
+# 0 8 * * * /path/to/ocicl-bot-run.sh >> /var/log/ocicl-bot.log 2>&1
+```
+
+## Container layout
+
+| Mount | Container path | Purpose |
+|---|---|---|
+| `~/.local/etc/ocicl-bot/` | `/config/` | `app-key.pem` (GitHub App key), `cursor` (last issue number) |
+| `~/.local/share/ocicl-bot/` | `/data/` | `ocicl-bot.db` (workflow state) |
+| `~/ocicl-admin/` | `/ocicl-admin/` | Git checkouts for ocicl repos |
+
+## REPL usage
+
 ```lisp
 (asdf:load-system :ocicl-bot)
-(ocicl-bot:run 2560)  ; process issues newer than #2560
+
+;; Run from cursor
+(ocicl-bot:run)
+
+;; Or specify a starting point
+(ocicl-bot:run :since 2556)
+
+;; Wait for completion and update cursor
+(ocicl-bot:wait-and-save-cursor)
 ```
+
+## Prerequisites
+
+- GitHub App "ocicl-bot" installed on the ocicl org
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) for LLM parsing
 
 ## Author and License
 

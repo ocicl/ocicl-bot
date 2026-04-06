@@ -4,16 +4,14 @@
 ;;; validates them, and creates ocicl repos with the standard structure.
 ;;; Uses cl-workflow for durable workflow execution.
 ;;;
-;;; Prerequisites:
-;;;   1. GitHub App "ocicl-bot" installed on the ocicl org
-;;;   2. App private key at ~/.ocicl/app-key.pem
+;;; Container layout:
+;;;   /config/         -- app-key.pem, cursor (mounted from ~/.local/etc/ocicl-bot/)
+;;;   /data/           -- ocicl-bot.db (mounted from ~/.local/share/ocicl-bot/)
+;;;   /ocicl-admin/    -- git checkouts (mounted from ~/ocicl-admin/)
 ;;;
 ;;; Usage:
 ;;;   (asdf:load-system :ocicl-bot)
-;;;   (ocicl-bot:run 2560)  ; process issues newer than #2560
-;;;
-;;; Each issue is processed durably: if the process crashes mid-batch,
-;;; restart replays completed issues and resumes at the next one.
+;;;   (ocicl-bot:run)
 
 (defpackage #:ocicl-bot
   (:use #:cl #:cl-workflow)
@@ -21,16 +19,23 @@
 
 (in-package #:ocicl-bot)
 
+;;; ─── Paths (overridable via env vars) ──────────────────────────────────────
+
 (defparameter *ocicl-admin-home*
-  (or (uiop:getenv "OCICL_ADMIN_HOME")
-      (namestring (merge-pathnames "ocicl-admin/" (user-homedir-pathname)))))
+  (or (uiop:getenv "OCICL_ADMIN_HOME") "/ocicl-admin/"))
+
+(defparameter *config-dir*
+  (or (uiop:getenv "OCICL_BOT_CONFIG") "/config/"))
+
+(defparameter *data-dir*
+  (or (uiop:getenv "OCICL_BOT_DATA") "/data/"))
 
 ;;; ─── GitHub App Authentication ──────────────────────────────────────────────
 
 (defparameter *github-app-id* "3293488")
 (defparameter *github-installation-id* "121833864")
 (defparameter *github-app-key-path*
-  (merge-pathnames ".ocicl/app-key.pem" (user-homedir-pathname)))
+  (merge-pathnames "app-key.pem" (pathname *config-dir*)))
 
 (defvar *github-token* nil)
 (defvar *github-token-expires* 0)
@@ -755,18 +760,62 @@ SOFTWARE.
         :processed (workflow-state :processed)
         :current-issue (workflow-state :current-issue)))
 
+;;; ─── Cursor ────────────────────────────────────────────────────────────────
+
+(defun cursor-path ()
+  (merge-pathnames "cursor" (pathname *config-dir*)))
+
+(defun read-cursor ()
+  "Read the last processed issue number from the cursor file. Returns 0 if missing."
+  (handler-case
+      (parse-integer (string-trim '(#\Newline #\Space #\Return)
+                                  (uiop:read-file-string (cursor-path))))
+    (error () 0)))
+
+(defun write-cursor (issue-number)
+  "Atomically update the cursor file with the new highest issue number."
+  (let ((tmp (merge-pathnames "cursor.tmp" (pathname *config-dir*))))
+    (with-open-file (s tmp :direction :output :if-exists :supersede)
+      (format s "~D~%" issue-number))
+    (rename-file tmp (cursor-path))))
+
 ;;; ─── Runner ────────────────────────────────────────────────────────────────
 
 (defvar *engine* nil)
 
-(defun run (since-issue-number &key (db-path "ocicl-ingest.db"))
-  "Run the ingest workflow for issues newer than SINCE-ISSUE-NUMBER.
-   Each call starts a new run. If the process is killed and restarted,
-   make-engine automatically resumes any RUNNING workflows from the DB."
-  (when *engine*
-    (ignore-errors (stop-engine *engine*)))
-  (setf *engine* (make-engine :db-path db-path))
-  (let ((run-id (start-workflow *engine* 'ingest-quicklisp-requests
-                                :input (list since-issue-number))))
-    (format t "Started ingest run: ~A~%" run-id)
-    run-id))
+(defun db-path ()
+  (namestring (merge-pathnames "ocicl-bot.db" (pathname *data-dir*))))
+
+(defun run (&key since)
+  "Run the ingest workflow. Reads the cursor file for the starting issue
+   number unless SINCE is provided. Updates the cursor on completion."
+  (let ((since-issue (or since (read-cursor))))
+    (when *engine*
+      (ignore-errors (stop-engine *engine*)))
+    (ensure-directories-exist (pathname *data-dir*))
+    (setf *engine* (make-engine :db-path (db-path)))
+    (let ((run-id (start-workflow *engine* 'ingest-quicklisp-requests
+                                  :input (list since-issue))))
+      (format t "Processing issues after #~D (run: ~A)~%" since-issue run-id)
+      run-id)))
+
+(defun wait-and-save-cursor ()
+  "Block until the current workflow completes, then update the cursor."
+  (loop
+    (sleep 5)
+    (let ((contexts (cl-workflow::workflow-engine-contexts *engine*)))
+      (when (zerop (hash-table-count contexts))
+        ;; All workflows finished -- find the result
+        (let* ((runs (cl-workflow::db-list-workflow-runs
+                      (cl-workflow::workflow-engine-db *engine*) :limit 1))
+               (run-id (when runs (first (first runs))))
+               (run (when run-id
+                      (cl-workflow::db-get-workflow-run
+                       (cl-workflow::workflow-engine-db *engine*) run-id)))
+               (result (when run (getf run :result))))
+          (when result
+            (let ((highest (getf result :highest-issue)))
+              (when (and highest (plusp highest))
+                (write-cursor highest)
+                (format t "Cursor updated to #~D~%" highest))))
+          (return))))))
