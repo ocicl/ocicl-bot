@@ -859,11 +859,9 @@ SOFTWARE.
       0)))
 
 (defun write-cursor (issue-number)
-  "Atomically update the cursor file with the new highest issue number."
-  (let ((tmp (merge-pathnames "cursor.tmp" (pathname *config-dir*))))
-    (with-open-file (s tmp :direction :output :if-exists :supersede)
-      (format s "~D~%" issue-number))
-    (rename-file tmp (cursor-path))))
+  "Update the cursor file with the new highest issue number."
+  (with-open-file (s (cursor-path) :direction :output :if-exists :supersede)
+    (format s "~D~%" issue-number)))
 
 ;;; ─── Runner ────────────────────────────────────────────────────────────────
 
