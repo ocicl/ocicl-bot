@@ -798,11 +798,11 @@ SOFTWARE.
                              (format nil "Reserved names: ~{~A~^, ~}" reserved))))))
         (let ((collisions (execute-activity 'check-system-name-collisions
                             :input (list systems ocicl-systems))))
-            (when collisions
-              (return-from build-ocicl-package
-                (execute-activity 'log-result
-                  :input (list issue-number pname "REJECTED"
-                               (format nil "Names already in ocicl: ~{~A~^, ~}" collisions)))))))
+          (when collisions
+            (return-from build-ocicl-package
+              (execute-activity 'log-result
+                :input (list issue-number pname "REJECTED"
+                             (format nil "Names already in ocicl: ~{~A~^, ~}" collisions))))))
 
         ;; Step 6: Create or fix
         (setf (workflow-state :phase) :creating)
