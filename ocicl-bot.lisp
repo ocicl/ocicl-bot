@@ -753,9 +753,12 @@ SOFTWARE.
         (execute-activity 'log-result
           :input (list issue-number pname "NEEDS_REVIEW" "Content policy flag"))))
 
-    ;; Step 2: Check ocicl status
+    ;; Step 2: Check ocicl status (local list first, then API)
     (setf (workflow-state :phase) :checking)
-    (let ((status (execute-activity 'check-ocicl-status :input (list pname))))
+    (let* ((ocicl-systems (execute-activity 'fetch-ocicl-systems-list :input nil))
+           (status (if (member pname ocicl-systems :test #'string-equal)
+                       :published
+                       (execute-activity 'check-ocicl-status :input (list pname)))))
       (when (eq status :published)
         (return-from build-ocicl-package
           (execute-activity 'log-result
@@ -793,9 +796,8 @@ SOFTWARE.
               (execute-activity 'log-result
                 :input (list issue-number pname "REJECTED"
                              (format nil "Reserved names: ~{~A~^, ~}" reserved))))))
-        (let ((existing (execute-activity 'fetch-ocicl-systems-list :input nil)))
-          (let ((collisions (execute-activity 'check-system-name-collisions
-                              :input (list systems existing))))
+        (let ((collisions (execute-activity 'check-system-name-collisions
+                            :input (list systems ocicl-systems))))
             (when collisions
               (return-from build-ocicl-package
                 (execute-activity 'log-result
