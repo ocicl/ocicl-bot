@@ -785,36 +785,34 @@ SOFTWARE.
   ;; No cursor -- find the oldest unhandled open issue
   (format t "No cursor file found, scanning for oldest unhandled issue...~%")
   (handler-case
-      (let ((page 1))
-        (loop
-          (let ((issues (gh-api "/repos/quicklisp/quicklisp-projects/issues"
-                                :parameters (list :state "open"
-                                                  :per-page "100"
-                                                  :sort "created"
-                                                  :direction "asc"
-                                                  :page (princ-to-string page)))))
-            (when (null issues) (return 0))
-            (dolist (issue issues)
-              (let* ((num (getf issue :number))
-                     (title (or (getf issue :title) ""))
-                     ;; Quick heuristic: extract likely project name from title
-                     ;; "Please add foo-bar" -> "foo-bar"
-                     (name (let ((pos (search "add " title :test #'char-equal)))
-                             (when pos
-                               (string-downcase
-                                (string-trim " " (subseq title (+ pos 4)))))))
-                     (status (when (and name (plusp (length name)))
-                               (handler-case
-                                   (progn
-                                     (gh-api (format nil "/orgs/ocicl/packages/container/~A" name))
-                                     :published)
-                                 (error () :not-found)))))
-                (when (eq status :not-found)
-                  ;; Start one before this issue so the workflow processes it
-                  (format t "First unhandled issue: #~D (~A)~%" num name)
-                  (return (max 0 (1- num))))))
-            (when (< (length issues) 100) (return 0))
-            (incf page))))
+      (block found
+        (let ((page 1))
+          (loop
+            (let ((issues (gh-api "/repos/quicklisp/quicklisp-projects/issues"
+                                  :parameters (list :state "open"
+                                                    :per-page "100"
+                                                    :sort "created"
+                                                    :direction "asc"
+                                                    :page (princ-to-string page)))))
+              (when (null issues) (return-from found 0))
+              (dolist (issue issues)
+                (let* ((num (getf issue :number))
+                       (title (or (getf issue :title) ""))
+                       (name (let ((pos (search "add " title :test #'char-equal)))
+                               (when pos
+                                 (string-downcase
+                                  (string-trim " " (subseq title (+ pos 4)))))))
+                       (status (when (and name (plusp (length name)))
+                                 (handler-case
+                                     (progn
+                                       (gh-api (format nil "/orgs/ocicl/packages/container/~A" name))
+                                       :published)
+                                   (error () :not-found)))))
+                  (when (eq status :not-found)
+                    (format t "First unhandled issue: #~D (~A)~%" num name)
+                    (return-from found (max 0 (1- num))))))
+              (when (< (length issues) 100) (return-from found 0))
+              (incf page)))))
     (error (e)
       (format t "Error bootstrapping cursor: ~A, starting from 0~%" e)
       0)))
