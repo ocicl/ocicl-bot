@@ -759,14 +759,10 @@ SOFTWARE.
            (status (if (member pname ocicl-systems :test #'string-equal)
                        :published
                        (execute-activity 'check-ocicl-status :input (list pname)))))
-      (when (eq status :published)
+      (when (or (eq status :published) (eq status :repo-ok))
         (return-from build-ocicl-package
           (execute-activity 'log-result
-            :input (list issue-number pname "ALREADY_EXISTS" "Already published"))))
-      (when (eq status :repo-ok)
-        (return-from build-ocicl-package
-          (execute-activity 'log-result
-            :input (list issue-number pname "REPO_OK" "Repo exists with valid README.org"))))
+            :input (list issue-number pname "EXISTS" "Already in ocicl"))))
 
       ;; Step 3: Validate upstream
       (setf (workflow-state :phase) :validating)
