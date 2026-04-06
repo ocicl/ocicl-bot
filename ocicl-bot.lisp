@@ -15,7 +15,7 @@
 
 (defpackage #:ocicl-bot
   (:use #:cl #:cl-workflow)
-  (:export #:run #:*engine*))
+  (:export #:run #:wait-and-save-cursor #:*engine*))
 
 (in-package #:ocicl-bot)
 
@@ -747,7 +747,7 @@ SOFTWARE.
                                             (format nil "~A"
                                                     (activity-failure-last-error e))))))))))))))))
 
-        (incf (workflow-state :processed) 1)))
+        (incf (workflow-state :processed) 1))
 
     ;; Update all-ocicl-systems.txt with all new systems at once
     (when created-systems
@@ -757,7 +757,7 @@ SOFTWARE.
     (list :issues-processed (length issues)
           :repos-created (length created-systems)
           :highest-issue highest-issue
-          :new-systems created-systems))
+          :new-systems created-systems)))
 
 ;;; ─── Query Handlers ────────────────────────────────────────────────────────
 
