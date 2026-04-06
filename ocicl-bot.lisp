@@ -2,7 +2,7 @@
 ;;;
 ;;; Monitors quicklisp-projects issues for new package requests,
 ;;; validates them, and creates ocicl repos with the standard structure.
-;;; Uses cl-flow for durable workflow execution.
+;;; Uses cl-workflow for durable workflow execution.
 ;;;
 ;;; Prerequisites:
 ;;;   1. GitHub App "ocicl-bot" installed on the ocicl org
@@ -16,7 +16,7 @@
 ;;; restart replays completed issues and resumes at the next one.
 
 (defpackage #:ocicl-bot
-  (:use #:cl #:cl-flow)
+  (:use #:cl #:cl-workflow)
   (:export #:run #:*engine*))
 
 (in-package #:ocicl-bot)

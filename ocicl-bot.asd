@@ -9,7 +9,7 @@
   :author      "Anthony Green"
   :license     "MIT"
   :version     "0.1.0"
-  :depends-on (:cl-flow
+  :depends-on (:cl-workflow
                :legit
                :cl-github-v3
                :cl-x509
