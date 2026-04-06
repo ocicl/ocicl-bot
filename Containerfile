@@ -16,7 +16,7 @@ COPY ocicl-bot.asd ocicl-bot.lisp ./
 
 # Install CL dependencies
 RUN ocicl install cl-workflow completions legit cl-github-v3 cl-x509 jose \
-    cl-base64 cl-ppcre cl-json drakma:2.0.9 flexi-streams
+    cl-base64 cl-ppcre cl-json drakma flexi-streams
 
 # Pre-compile
 RUN sbcl --noinform --non-interactive \
