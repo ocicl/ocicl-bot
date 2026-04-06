@@ -106,7 +106,9 @@
                                         (uiop:read-file-string key-file))))
                        (error "GEMINI_API_KEY not set and no key file in config dir"))))
       (setf *llm-provider*
-            (make-instance 'completions:gemini-completer :api-key api-key))))
+            (make-instance 'completions:gemini-completer
+                           :api-key api-key
+                           :model "gemini-2.5-flash"))))
   *llm-provider*)
 
 ;;; ─── Git helpers (via legit) ───────────────────────────────────────────────
@@ -876,9 +878,19 @@ SOFTWARE.
                       (cl-workflow::db-get-workflow-run
                        (cl-workflow::workflow-engine-db *engine*) run-id)))
                (result (when run (getf run :result))))
-          (when result
-            (let ((highest (getf result :highest-issue)))
-              (when (and highest (plusp highest))
-                (write-cursor highest)
-                (llog:info (format nil "Cursor updated to #~D" highest)))))
+          (let ((status (when run (getf run :status))))
+            (cond
+              ((and result (equal status "COMPLETED"))
+               (let ((highest (getf result :highest-issue)))
+                 (when (and highest (plusp highest))
+                   (write-cursor highest)
+                   (llog:info (format nil "Cursor updated to #~D" highest))))
+               (llog:info (format nil "Workflow completed: ~D issues, ~D created"
+                                  (or (getf result :issues-processed) 0)
+                                  (or (getf result :repos-created) 0))))
+              ((equal status "FAILED")
+               (llog:error (format nil "Workflow FAILED: ~A"
+                                   (or (when run (getf run :error-message)) "unknown error"))))
+              (t
+               (llog:warn (format nil "Workflow ended with status: ~A" status)))))
           (return))))))
