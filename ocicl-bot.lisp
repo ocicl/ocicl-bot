@@ -663,6 +663,19 @@ SOFTWARE.
 
         (setf (workflow-state :current-issue) num)
 
+        ;; Fast path: if title is "Please add X" and X is already published, skip LLM
+        (let ((quick-name (let ((pos (search "add " (or title "") :test #'char-equal)))
+                            (when pos
+                              (string-downcase (string-trim " " (subseq title (+ pos 4))))))))
+          (when (and quick-name
+                     (plusp (length quick-name))
+                     (member quick-name existing-systems :test #'string-equal))
+            (execute-activity 'log-result
+              :input (list num quick-name "ALREADY_EXISTS" "Package already published (fast path)"))
+            (incf (workflow-state :processed) 1)
+            (execute-activity 'save-cursor-activity :input (list num))
+            (go next-issue)))
+
         ;; Step 1: Parse with LLM
         (let* ((parsed (execute-activity 'parse-issue-with-llm
                          :input (list num title (or body ""))))
@@ -786,7 +799,8 @@ SOFTWARE.
                                                     (activity-failure-last-error e))))))))))))))))
 
         (incf (workflow-state :processed) 1)
-        (execute-activity 'save-cursor-activity :input (list (getf issue :number))))
+        (execute-activity 'save-cursor-activity :input (list (getf issue :number)))
+        next-issue)
 
     ;; Update all-ocicl-systems.txt with all new systems at once
     (when created-systems
