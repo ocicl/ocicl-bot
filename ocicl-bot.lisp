@@ -96,7 +96,11 @@
   "Initialize the Gemini LLM provider if needed."
   (unless *llm-provider*
     (let ((api-key (or (uiop:getenv "GEMINI_API_KEY")
-                       (error "GEMINI_API_KEY environment variable required"))))
+                       (let ((key-file (merge-pathnames "gemini-api-key" (pathname *config-dir*))))
+                         (when (probe-file key-file)
+                           (string-trim '(#\Newline #\Space #\Return)
+                                        (uiop:read-file-string key-file))))
+                       (error "GEMINI_API_KEY not set and no key file in config dir"))))
       (setf *llm-provider*
             (make-instance 'completions:gemini-completer :api-key api-key))))
   *llm-provider*)
