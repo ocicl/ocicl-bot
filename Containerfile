@@ -5,8 +5,10 @@ RUN dnf install -y sbcl sqlite-libs git && dnf clean all
 # Install ocicl
 RUN OCICL_URL=$(curl -sL -o /dev/null -w '%{url_effective}' https://github.com/ocicl/ocicl/releases/latest) && \
     OCICL_VER=$(basename "$OCICL_URL") && \
+    cd /tmp && \
     curl -sL "https://github.com/ocicl/ocicl/releases/download/${OCICL_VER}/ocicl-${OCICL_VER#v}-linux-amd64.tar.gz" \
-    | tar xz --strip-components=0 -C /usr/local/bin ocicl && \
+    | tar xz && \
+    cp ocicl /usr/local/bin/ && rm -rf ocicl README.md LICENSE THIRD-PARTY-LICENSES.txt && \
     ocicl setup > ~/.sbclrc
 
 WORKDIR /app
