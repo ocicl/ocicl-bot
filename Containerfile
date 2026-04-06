@@ -15,6 +15,8 @@ WORKDIR /app
 COPY ocicl-bot.asd ocicl-bot.lisp ./
 
 # Install CL dependencies
+# Pin puri to the version with uri-is-ip6 (needed by drakma 2.0.10)
+RUN ocicl install puri:20260406-4bbab89
 RUN ocicl install cl-workflow completions legit cl-github-v3 cl-x509 jose \
     cl-base64 cl-ppcre cl-json drakma flexi-streams
 
