@@ -66,7 +66,7 @@ $RUNTIME pull "$IMAGE" 2>/dev/null || {
 echo "Running ocicl-bot..."
 exec $RUNTIME run --rm \
   -e "GEMINI_API_KEY=$GEMINI_API_KEY" \
-  -v "$CONFIG_DIR":/config \
-  -v "$DATA_DIR":/data \
-  -v "$ADMIN_DIR":/ocicl-admin \
+  -v "$CONFIG_DIR":/config:z \
+  -v "$DATA_DIR":/data:z \
+  -v "$ADMIN_DIR":/ocicl-admin:z \
   "$IMAGE"

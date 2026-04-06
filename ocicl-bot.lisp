@@ -757,7 +757,7 @@ SOFTWARE.
     (list :issues-processed (length issues)
           :repos-created (length created-systems)
           :highest-issue highest-issue
-          :new-systems created-systems))
+          :new-systems created-systems)))
 
 ;;; ─── Query Handlers ────────────────────────────────────────────────────────
 
@@ -839,7 +839,7 @@ SOFTWARE.
   (let ((since-issue (or since (read-cursor))))
     (when *engine*
       (ignore-errors (stop-engine *engine*)))
-    (ensure-directories-exist (pathname *data-dir*))
+    (ensure-directories-exist (db-path))
     (setf *engine* (make-engine :db-path (db-path)))
     (let ((run-id (start-workflow *engine* 'ingest-quicklisp-requests
                                   :input (list since-issue))))
