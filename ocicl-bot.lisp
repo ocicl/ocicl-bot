@@ -610,6 +610,13 @@ SOFTWARE.
       (ignore-errors
         (uiop:delete-directory-tree (pathname repo-dir) :validate t)))))
 
+(defactivity save-cursor-activity ((issue-number integer))
+  "Persist the cursor to disk after processing an issue."
+  :retry-policy (:max-attempts 1)
+  :timeout 5
+  (write-cursor issue-number)
+  issue-number)
+
 (defactivity log-result ((issue-number integer) (name string) (status string) (detail string))
   "Log the processing result for an issue."
   :retry-policy (:max-attempts 1)
@@ -767,7 +774,8 @@ SOFTWARE.
                                             (format nil "~A"
                                                     (activity-failure-last-error e))))))))))))))))
 
-        (incf (workflow-state :processed) 1))
+        (incf (workflow-state :processed) 1)
+        (execute-activity 'save-cursor-activity :input (list num)))
 
     ;; Update all-ocicl-systems.txt with all new systems at once
     (when created-systems
