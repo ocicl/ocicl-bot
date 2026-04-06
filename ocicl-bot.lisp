@@ -871,16 +871,23 @@ SOFTWARE.
 
 (defun run (&key since)
   "Run the ingest workflow. Reads the cursor file for the starting issue
-   number unless SINCE is provided. Updates the cursor on completion."
-  (let ((since-issue (or since (read-cursor))))
-    (when *engine*
-      (ignore-errors (stop-engine *engine*)))
-    (ensure-directories-exist (db-path))
-    (setf *engine* (make-engine :db-path (db-path)))
-    (let ((run-id (start-workflow *engine* 'ingest-quicklisp-requests
-                                  :input (list since-issue))))
-      (llog:info (format nil "Processing issues after #~D (run: ~A)" since-issue run-id))
-      run-id)))
+   number unless SINCE is provided. If a previous run is still RUNNING
+   in the DB, resumes it instead of starting a new one."
+  (when *engine*
+    (ignore-errors (stop-engine *engine*)))
+  (ensure-directories-exist (db-path))
+  (setf *engine* (make-engine :db-path (db-path)))
+  ;; Check if make-engine already resumed a RUNNING workflow
+  (let ((contexts (cl-workflow::workflow-engine-contexts *engine*)))
+    (when (plusp (hash-table-count contexts))
+      (llog:info "Resuming previous run from DB")
+      (return-from run :resumed)))
+  ;; No running workflow -- start a new one
+  (let* ((since-issue (or since (read-cursor)))
+         (run-id (start-workflow *engine* 'ingest-quicklisp-requests
+                                 :input (list since-issue))))
+    (llog:info (format nil "Processing issues after #~D (run: ~A)" since-issue run-id))
+    run-id))
 
 (defun wait-and-save-cursor ()
   "Block until the current workflow completes, then update the cursor."
