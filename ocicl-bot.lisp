@@ -36,6 +36,36 @@
 (defparameter *data-dir*
   (or (uiop:getenv "OCICL_BOT_DATA") "/data/"))
 
+;;; ─── Seen issues tracking ──────────────────────────────────────────────────
+
+(defvar *seen-issues* (make-hash-table :test 'eql))
+
+(defun seen-issues-path ()
+  (merge-pathnames "seen-issues.txt" (pathname *data-dir*)))
+
+(defun load-seen-issues ()
+  "Load previously seen issue numbers from disk."
+  (clrhash *seen-issues*)
+  (handler-case
+      (dolist (line (uiop:read-file-lines (seen-issues-path)))
+        (let ((num (ignore-errors (parse-integer (string-trim " " line)))))
+          (when num (setf (gethash num *seen-issues*) t))))
+    (error () nil))
+  (llog:info (format nil "Loaded ~D seen issues" (hash-table-count *seen-issues*))))
+
+(defun mark-issue-seen (issue-number)
+  "Mark an issue as seen and persist to disk."
+  (unless (gethash issue-number *seen-issues*)
+    (setf (gethash issue-number *seen-issues*) t)
+    (with-open-file (s (seen-issues-path)
+                       :direction :output
+                       :if-exists :append
+                       :if-does-not-exist :create)
+      (format s "~D~%" issue-number))))
+
+(defun issue-seen-p (issue-number)
+  (gethash issue-number *seen-issues*))
+
 ;;; ─── GitHub App Authentication ──────────────────────────────────────────────
 
 (defparameter *github-app-id* "3293488")
@@ -621,6 +651,12 @@ SOFTWARE.
       (ignore-errors
         (uiop:delete-directory-tree (pathname repo-dir) :validate t)))))
 
+(defactivity mark-issue-seen-activity ((issue-number integer))
+  "Mark an issue as processed."
+  :retry-policy (:max-attempts 1)
+  :timeout 5
+  (mark-issue-seen issue-number))
+
 (defactivity log-result ((issue-number integer) (name string) (status string) (detail string))
   "Log the processing result for an issue."
   :retry-policy (:max-attempts 1)
@@ -688,9 +724,14 @@ SOFTWARE.
                           (quick-name (extract-name-from-title title)))
                      (setf (workflow-state :current-issue) num)
                      (cond
+                       ;; Already processed this issue before
+                       ((issue-seen-p num)
+                        (incf consecutive-known)
+                        (incf skipped))
                        ;; Known project -- count toward stop threshold
                        ((and quick-name
                              (member quick-name systems :test #'string-equal))
+                        (mark-issue-seen num)
                         (incf consecutive-known)
                         (incf skipped)
                         (when (>= consecutive-known stop-after)
@@ -700,6 +741,7 @@ SOFTWARE.
                        ;; Skip quicklisp/qlot ecosystem
                        ((and quick-name
                              (member quick-name *skip-project-names* :test #'string-equal))
+                        (mark-issue-seen num)
                         (incf skipped)
                         (setf consecutive-known 0))
                        ;; Title matches "Please add X" but X not in systems list -- enqueue
@@ -712,6 +754,7 @@ SOFTWARE.
                         (incf enqueued))
                        ;; Can't parse title (rename, update, bug report, etc.) -- skip
                        (t
+                        (mark-issue-seen num)
                         (incf skipped)
                         (incf consecutive-known)))))
                  (when (< (length batch) 100)
@@ -725,6 +768,9 @@ SOFTWARE.
 (defworkflow build-ocicl-package ((issue-number integer) (title string) (body string))
   "Process a single quicklisp-projects issue: parse, validate, create ocicl repo."
   (setf (workflow-state :phase) :parsing)
+  ;; Mark this issue as seen so we never re-process it
+  (execute-activity 'mark-issue-seen-activity :input (list issue-number))
+
   ;; Step 1: Parse with LLM
   (let* ((parsed (execute-activity 'parse-issue-with-llm
                    :input (list issue-number title body)))
@@ -836,6 +882,7 @@ SOFTWARE.
   (when *engine*
     (ignore-errors (stop-engine *engine*)))
   (ensure-directories-exist (db-path))
+  (load-seen-issues)
   (setf *engine* (make-engine :db-path (db-path)))
   ;; Check if make-engine already resumed RUNNING workflows
   (let ((contexts (cl-workflow::workflow-engine-contexts *engine*)))
