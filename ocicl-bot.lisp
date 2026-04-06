@@ -590,6 +590,7 @@ SOFTWARE.
         (gh-api "/orgs/ocicl/repos" :method :post
                 :body (list :name lc-name :public t))
       (error () nil))  ; may already exist
+    (sleep 5)  ; give GitHub time to propagate the new repo
     (git-clone-repo (format nil "https://github.com/ocicl/~A.git" lc-name) repo-dir)
     (populate-ocicl-repo-dir (pathname repo-dir) lc-name url description systems)
     (git-add-commit-push repo-dir (format nil "Add ~A" lc-name))
