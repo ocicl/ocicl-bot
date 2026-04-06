@@ -2,7 +2,7 @@
 
 Automated ingestion of new Common Lisp projects into [ocicl](https://github.com/ocicl).
 
-Monitors [quicklisp-projects issues](https://github.com/quicklisp/quicklisp-projects/issues) for new package requests, validates them, and creates ocicl repos with the standard structure. Built on [cl-flow](https://github.com/atgreen/cl-flow) for durable workflow execution.
+Monitors [quicklisp-projects issues](https://github.com/quicklisp/quicklisp-projects/issues) for new package requests, validates them, and creates ocicl repos with the standard structure. Built on [cl-workflow](https://github.com/atgreen/cl-workflow) for durable workflow execution.
 
 ## What it does
 
