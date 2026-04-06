@@ -785,7 +785,7 @@ SOFTWARE.
                                                     (activity-failure-last-error e))))))))))))))))
 
         (incf (workflow-state :processed) 1)
-        (execute-activity 'save-cursor-activity :input (list num)))
+        (execute-activity 'save-cursor-activity :input (list (getf issue :number))))
 
     ;; Update all-ocicl-systems.txt with all new systems at once
     (when created-systems
