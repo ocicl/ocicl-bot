@@ -162,6 +162,9 @@
     (error ()
       ;; There are changes
       (run-git-in repo-dir "commit" "-m" message)
+      ;; Ensure we're on main branch (empty repos may not have one)
+      (handler-case (run-git-in repo-dir "branch" "-M" "main")
+        (error () nil))
       (run-git-in repo-dir "push" "-u" "origin" "main"))))
 
 (defun clean-admin-dir (admin-dir name lc-name)
