@@ -8,28 +8,17 @@ RUN npm install -g @google/gemini-cli
 # Install ocicl
 RUN curl -sL https://github.com/ocicl/ocicl/releases/latest/download/ocicl-linux-x86_64 \
     -o /usr/local/bin/ocicl && chmod +x /usr/local/bin/ocicl && \
-    ocicl setup > /tmp/ocicl-setup.lisp
+    ocicl setup > ~/.sbclrc
 
 WORKDIR /app
 COPY ocicl-bot.asd ocicl-bot.lisp ./
 
-# Install CL dependencies
-RUN sbcl --noinform --non-interactive \
-    --load /tmp/ocicl-setup.lisp \
-    --eval '(ocicl:install "cl-workflow")' \
-    --eval '(ocicl:install "legit")' \
-    --eval '(ocicl:install "cl-github-v3")' \
-    --eval '(ocicl:install "cl-x509")' \
-    --eval '(ocicl:install "jose")' \
-    --eval '(ocicl:install "cl-base64")' \
-    --eval '(ocicl:install "cl-ppcre")' \
-    --eval '(ocicl:install "cl-json")' \
-    --eval '(ocicl:install "drakma")' \
-    --eval '(ocicl:install "flexi-streams")'
+# Install CL dependencies via ocicl CLI
+RUN ocicl install cl-workflow legit cl-github-v3 cl-x509 jose \
+    cl-base64 cl-ppcre cl-json drakma flexi-streams
 
 # Pre-compile everything
 RUN sbcl --noinform --non-interactive \
-    --load /tmp/ocicl-setup.lisp \
     --eval '(asdf:load-system :ocicl-bot)' \
     --eval '(format t "~&Build OK~%")'
 
