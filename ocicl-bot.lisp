@@ -701,14 +701,18 @@ SOFTWARE.
                              (member quick-name *skip-project-names* :test #'string-equal))
                         (incf skipped)
                         (setf consecutive-known 0))
-                       ;; Unknown or can't parse title -- enqueue a build
-                       (t
+                       ;; Title matches "Please add X" but X not in systems list -- enqueue
+                       (quick-name
                         (llog:info (format nil "Skipped ~D known projects" skipped))
                         (setf consecutive-known 0)
                         (setf skipped 0)
                         (execute-activity 'enqueue-build
                           :input (list num title body))
-                        (incf enqueued)))))
+                        (incf enqueued))
+                       ;; Can't parse title (rename, update, bug report, etc.) -- skip
+                       (t
+                        (incf skipped)
+                        (incf consecutive-known)))))
                  (when (< (length batch) 100)
                    (return-from scan-done)))))
     (setf (workflow-state :phase) :done)
