@@ -15,13 +15,15 @@
 
 (defpackage #:ocicl-bot
   (:use #:cl #:cl-workflow)
-  (:export #:run #:wait-and-save-cursor #:*engine*))
+  (:export #:run #:wait-for-completion #:*engine*))
 
 (in-package #:ocicl-bot)
 
 ;;; ─── Logging ───────────────────────────────────────────────────────────────
 
 (setf llog:*logger* (llog:make-logger :name "ocicl-bot" :level llog:+info+))
+
+(defvar *engine* nil "The cl-workflow engine instance.")
 
 ;;; ─── Paths (overridable via env vars) ──────────────────────────────────────
 
@@ -618,13 +620,6 @@ SOFTWARE.
       (ignore-errors
         (uiop:delete-directory-tree (pathname repo-dir) :validate t)))))
 
-(defactivity save-cursor-activity ((issue-number integer))
-  "Persist the cursor to disk after processing an issue."
-  :retry-policy (:max-attempts 1)
-  :timeout 5
-  (write-cursor issue-number)
-  issue-number)
-
 (defactivity log-result ((issue-number integer) (name string) (status string) (detail string))
   "Log the processing result for an issue."
   :retry-policy (:max-attempts 1)
@@ -638,297 +633,231 @@ SOFTWARE.
      (llog:info (format nil "~A: ~A" status detail) :issue issue-number :project name)))
   t)
 
-;;; ─── Workflow ──────────────────────────────────────────────────────────────
+;;; ─── Scanner Activities ─────────────────────────────────────────────────────
 
-(defworkflow ingest-quicklisp-requests ((since-issue-number integer))
-  "Process new quicklisp-projects issues since SINCE-ISSUE-NUMBER.
-   For each issue: parse with LLM, validate, check ocicl, clone+validate, create repo."
-  (let ((issues (execute-activity 'fetch-new-ql-issues
-                  :input (list since-issue-number)))
-        (existing-systems (execute-activity 'fetch-ocicl-systems-list :input nil))
-        (created-systems '())
-        (seen-projects (make-hash-table :test 'equal))  ; detect duplicate issues
-        (highest-issue 0))
+(defactivity fetch-issue-page ((page integer))
+  "Fetch one page of open issues from quicklisp-projects, newest first."
+  :retry-policy (:max-attempts 3 :initial-interval 5 :backoff-coefficient 2.0)
+  :timeout 30
+  (gh-api "/repos/quicklisp/quicklisp-projects/issues"
+          :parameters (list :state "open"
+                            :per-page "100"
+                            :sort "created"
+                            :direction "desc"
+                            :page (princ-to-string page))))
 
-    (setf (workflow-state :total-issues) (length issues))
-    (setf (workflow-state :processed) 0)
+(defun extract-name-from-title (title)
+  "Extract project name from 'Please add X' title. Returns lowercase name or NIL."
+  (let ((pos (search "add " (or title "") :test #'char-equal)))
+    (when pos
+      (let ((name (string-downcase (string-trim " " (subseq title (+ pos 4))))))
+        (when (plusp (length name)) name)))))
 
-    (dolist (issue issues)
-      (let ((num (getf issue :number))
-            (title (getf issue :title))
-            (body (getf issue :body)))
+(defactivity enqueue-build ((issue-number integer) (title string) (body string))
+  "Start a build-ocicl-package workflow for this issue."
+  :retry-policy (:max-attempts 1)
+  :timeout 10
+  (let ((wf-id (format nil "build-issue-~D" issue-number)))
+    (start-workflow *engine* 'build-ocicl-package
+                    :workflow-id wf-id
+                    :input (list issue-number title body))
+    (llog:info (format nil "Enqueued build for issue #~D" issue-number))
+    wf-id))
 
-        (when (> num highest-issue)
-          (setf highest-issue num))
+;;; ─── Scanner Workflow ──────────────────────────────────────────────────────
 
-        (setf (workflow-state :current-issue) num)
+(defworkflow scan-quicklisp-issues ()
+  "Scan quicklisp-projects issues newest-first, enqueue builds for unknown projects.
+   Stops after 10 consecutive already-known projects."
+  (let ((systems (execute-activity 'fetch-ocicl-systems-list :input nil))
+        (consecutive-known 0)
+        (stop-after 10)
+        (enqueued 0))
+    (setf (workflow-state :phase) :scanning)
+    (block scan-done
+      (loop for page from 1
+            do (let ((batch (execute-activity 'fetch-issue-page :input (list page))))
+                 (when (null batch)
+                   (return-from scan-done))
+                 (dolist (issue batch)
+                   (let* ((num (getf issue :number))
+                          (title (or (getf issue :title) ""))
+                          (body (or (getf issue :body) ""))
+                          (quick-name (extract-name-from-title title)))
+                     (setf (workflow-state :current-issue) num)
+                     (cond
+                       ;; Known project -- count toward stop threshold
+                       ((and quick-name
+                             (member quick-name systems :test #'string-equal))
+                        (incf consecutive-known)
+                        (llog:info (format nil "Known: #~D ~A (~D/~D)"
+                                          num quick-name consecutive-known stop-after))
+                        (when (>= consecutive-known stop-after)
+                          (return-from scan-done)))
+                       ;; Skip quicklisp/qlot ecosystem
+                       ((and quick-name
+                             (member quick-name *skip-project-names* :test #'string-equal))
+                        (llog:info (format nil "Skip qlot/quicklisp: #~D ~A" num quick-name))
+                        (setf consecutive-known 0))
+                       ;; Unknown or can't parse title -- enqueue a build
+                       (t
+                        (setf consecutive-known 0)
+                        (execute-activity 'enqueue-build
+                          :input (list num title body))
+                        (incf enqueued)))))
+                 (when (< (length batch) 100)
+                   (return-from scan-done)))))
+    (setf (workflow-state :phase) :done)
+    (llog:info (format nil "Scan complete: enqueued ~D builds" enqueued))
+    (list :enqueued enqueued)))
 
-        ;; Fast path: if title is "Please add X" and X is already published, skip LLM
-        (let ((quick-name (let ((pos (search "add " (or title "") :test #'char-equal)))
-                            (when pos
-                              (string-downcase (string-trim " " (subseq title (+ pos 4))))))))
-          (when (and quick-name
-                     (plusp (length quick-name))
-                     (member quick-name existing-systems :test #'string-equal))
+;;; ─── Builder Workflow ──────────────────────────────────────────────────────
+
+(defworkflow build-ocicl-package ((issue-number integer) (title string) (body string))
+  "Process a single quicklisp-projects issue: parse, validate, create ocicl repo."
+  (setf (workflow-state :phase) :parsing)
+  ;; Step 1: Parse with LLM
+  (let* ((parsed (execute-activity 'parse-issue-with-llm
+                   :input (list issue-number title body)))
+         (pname (when parsed (string-downcase (or (getf parsed :name) ""))))
+         (purl  (when parsed (getf parsed :url)))
+         (desc  (or (when parsed (getf parsed :description)) "")))
+
+    ;; Early exits
+    (when (null parsed)
+      (return-from build-ocicl-package
+        (execute-activity 'log-result
+          :input (list issue-number "?" "SKIPPED" "Could not parse issue"))))
+    (when (getf parsed :skip)
+      (return-from build-ocicl-package
+        (execute-activity 'log-result
+          :input (list issue-number "?" "SKIPPED" (getf parsed :reason)))))
+    (when (or (zerop (length pname)) (null purl) (zerop (length purl)))
+      (return-from build-ocicl-package
+        (execute-activity 'log-result
+          :input (list issue-number "?" "SKIPPED" "Missing name or URL"))))
+    (when (member pname *skip-project-names* :test #'string-equal)
+      (return-from build-ocicl-package
+        (execute-activity 'log-result
+          :input (list issue-number pname "SKIPPED" "Quicklisp/qlot ecosystem"))))
+    (when (eq (getf parsed :content-flag) :review)
+      (return-from build-ocicl-package
+        (execute-activity 'log-result
+          :input (list issue-number pname "NEEDS_REVIEW" "Content policy flag"))))
+
+    ;; Step 2: Check ocicl status
+    (setf (workflow-state :phase) :checking)
+    (let ((status (execute-activity 'check-ocicl-status :input (list pname))))
+      (when (eq status :published)
+        (return-from build-ocicl-package
+          (execute-activity 'log-result
+            :input (list issue-number pname "ALREADY_EXISTS" "Already published"))))
+      (when (eq status :repo-ok)
+        (return-from build-ocicl-package
+          (execute-activity 'log-result
+            :input (list issue-number pname "REPO_OK" "Repo exists with valid README.org"))))
+
+      ;; Step 3: Validate upstream
+      (setf (workflow-state :phase) :validating)
+      (let ((validation (execute-activity 'validate-upstream-repo :input (list purl))))
+        (when (not (getf validation :reachable))
+          (return-from build-ocicl-package
             (execute-activity 'log-result
-              :input (list num quick-name "ALREADY_EXISTS" "Package already published (fast path)"))
-            (incf (workflow-state :processed) 1)
-            (execute-activity 'save-cursor-activity :input (list num))
-            (go next-issue)))
+              :input (list issue-number pname "REJECTED" "Upstream unreachable"))))
+        (when (getf validation :is-fork)
+          (return-from build-ocicl-package
+            (execute-activity 'log-result
+              :input (list issue-number pname "REJECTED" "Repo is a fork"))))
+        (unless (getf validation :has-license)
+          (execute-activity 'log-result
+            :input (list issue-number pname "WARNING" "No license detected"))))
 
-        ;; Step 1: Parse with LLM
-        (let* ((parsed (execute-activity 'parse-issue-with-llm
-                         :input (list num title (or body ""))))
-               (pname (when parsed (string-downcase (or (getf parsed :name) ""))))
-               (purl  (when parsed (getf parsed :url)))
-               (desc  (or (when parsed (getf parsed :description)) "")))
-          (cond
-            ((null parsed)
-             (execute-activity 'log-result
-               :input (list num "?" "SKIPPED" "Could not parse issue")))
+      ;; Step 4: Clone and discover systems
+      (setf (workflow-state :phase) :cloning)
+      (let* ((discovered (execute-activity 'clone-and-find-systems :input (list pname purl)))
+             (systems (getf discovered :systems))
+             (systems-str (format nil "~{~A~^ ~}" systems)))
 
-            ((getf parsed :skip)
-             (execute-activity 'log-result
-               :input (list num "?" "SKIPPED" (getf parsed :reason))))
+        ;; Step 5: Check for reserved/colliding names
+        (let ((reserved (execute-activity 'check-reserved-names :input (list systems))))
+          (when reserved
+            (return-from build-ocicl-package
+              (execute-activity 'log-result
+                :input (list issue-number pname "REJECTED"
+                             (format nil "Reserved names: ~{~A~^, ~}" reserved))))))
+        (let ((existing (execute-activity 'fetch-ocicl-systems-list :input nil)))
+          (let ((collisions (execute-activity 'check-system-name-collisions
+                              :input (list systems existing))))
+            (when collisions
+              (return-from build-ocicl-package
+                (execute-activity 'log-result
+                  :input (list issue-number pname "REJECTED"
+                               (format nil "Names already in ocicl: ~{~A~^, ~}" collisions)))))))
 
-            ((or (null pname) (zerop (length pname)) (null purl) (zerop (length purl)))
-             (execute-activity 'log-result
-               :input (list num "?" "SKIPPED" "Missing name or URL")))
+        ;; Step 6: Create or fix
+        (setf (workflow-state :phase) :creating)
+        (cond
+          ((or (eq status :none) (eq status :repo-empty))
+           (execute-activity 'create-ocicl-repo :input (list pname purl desc systems-str))
+           (execute-activity 'log-result
+             :input (list issue-number pname "CREATED" (format nil "Systems: ~A" systems-str))))
+          (t
+           (execute-activity 'fix-ocicl-repo :input (list pname purl desc systems-str))
+           (execute-activity 'log-result
+             :input (list issue-number pname "FIXED" (format nil "Systems: ~A" systems-str)))))
 
-            ;; Skip quicklisp/qlot ecosystem projects
-            ((member pname *skip-project-names* :test #'string-equal)
-             (execute-activity 'log-result
-               :input (list num pname "SKIPPED" "Quicklisp/qlot ecosystem project")))
-
-            ;; Duplicate issue detection (same project in this batch)
-            ((gethash pname seen-projects)
-             (execute-activity 'log-result
-               :input (list num pname "SKIPPED"
-                            (format nil "Duplicate of issue #~A" (gethash pname seen-projects)))))
-
-            ;; Content flag check
-            ((eq (getf parsed :content-flag) :review)
-             (execute-activity 'log-result
-               :input (list num pname "NEEDS_REVIEW"
-                            "Flagged for manual review (content policy)")))
-
-            (t
-             (setf (gethash pname seen-projects) num)
-
-             ;; Step 2: Check ocicl status (fast path: check local list first, saves API calls)
-             (let ((status (if (member pname existing-systems :test #'string-equal)
-                               :published
-                               (execute-activity 'check-ocicl-status
-                                 :input (list pname)))))
-               (cond
-                 ((eq status :published)
-                  (execute-activity 'log-result
-                    :input (list num pname "ALREADY_EXISTS" "Package already published")))
-
-                 ((eq status :repo-ok)
-                  (execute-activity 'log-result
-                    :input (list num pname "REPO_OK" "Repo exists with valid README.org")))
-
-                 ((or (eq status :none) (eq status :repo-empty) (eq status :repo-broken))
-                  ;; Step 3: Validate upstream repo (only for new/broken, saves API calls)
-                  (let ((validation (execute-activity 'validate-upstream-repo
-                                      :input (list purl))))
-                    (cond
-                      ((not (getf validation :reachable))
-                       (execute-activity 'log-result
-                         :input (list num pname "REJECTED" "Upstream repo is unreachable")))
-                      ((getf validation :is-fork)
-                       (execute-activity 'log-result
-                         :input (list num pname "REJECTED"
-                                      "Repo is a fork -- use the canonical upstream instead")))
-                      (t
-                       (unless (getf validation :has-license)
-                         (execute-activity 'log-result
-                           :input (list num pname "WARNING" "No license detected")))
-                       ;; Step 4: Clone and discover systems
-                       (handler-case
-                             (let* ((discovered (execute-activity 'clone-and-find-systems
-                                                  :input (list pname purl)))
-                                    (systems (getf discovered :systems))
-                                    (systems-str (format nil "~{~A~^ ~}" systems)))
-
-                               ;; Step 5: Check for reserved names
-                               (let ((reserved (execute-activity 'check-reserved-names
-                                                 :input (list systems))))
-                                 (when reserved
-                                   (execute-activity 'log-result
-                                     :input (list num pname "REJECTED"
-                                                  (format nil "Reserved system names: ~{~A~^, ~}" reserved)))
-                                   (throw 'skip-issue nil)))
-
-                               ;; Step 6: Check for system name collisions
-                               (let ((collisions (execute-activity 'check-system-name-collisions
-                                                   :input (list systems existing-systems))))
-                                 (when collisions
-                                   (execute-activity 'log-result
-                                     :input (list num pname "REJECTED"
-                                                  (format nil "System names already in ocicl: ~{~A~^, ~}"
-                                                          collisions)))
-                                   (throw 'skip-issue nil)))
-
-                               ;; Step 7: Create or fix the repo
-                               (cond
-                                 ((eq status :none)
-                                  (execute-activity 'create-ocicl-repo
-                                    :input (list pname purl desc systems-str))
-                                  (execute-activity 'log-result
-                                    :input (list num pname "CREATED"
-                                                 (format nil "Systems: ~A" systems-str))))
-
-                                 (t
-                                  (execute-activity 'fix-ocicl-repo
-                                    :input (list pname purl desc systems-str))
-                                  (execute-activity 'log-result
-                                    :input (list num pname "FIXED"
-                                                 (format nil "Systems: ~A" systems-str)))))
-
-                               ;; Track new systems
-                               (dolist (s systems)
-                                 (push s created-systems)
-                                 (push s existing-systems)))
-
-                           (activity-failure (e)
-                             (execute-activity 'log-result
-                               :input (list num (or pname "?") "FAILED"
-                                            (format nil "~A"
-                                                    (activity-failure-last-error e))))))))))))))))
-
-        (incf (workflow-state :processed) 1)
-        (execute-activity 'save-cursor-activity :input (list (getf issue :number)))
-        next-issue)
-
-    ;; Update all-ocicl-systems.txt with all new systems at once
-    (when created-systems
-      (execute-activity 'update-systems-list :input (list created-systems)))
-
-    ;; Return summary
-    (list :issues-processed (length issues)
-          :repos-created (length created-systems)
-          :highest-issue highest-issue
-          :new-systems created-systems)))
+        ;; Step 7: Update systems list
+        (execute-activity 'update-systems-list :input (list systems))
+        (setf (workflow-state :phase) :done)))))
 
 ;;; ─── Query Handlers ────────────────────────────────────────────────────────
 
-(defquery ingest-quicklisp-requests progress ()
-  "How far along is the ingest run?"
-  (list :total (workflow-state :total-issues)
-        :processed (workflow-state :processed)
+(defquery scan-quicklisp-issues progress ()
+  (list :phase (workflow-state :phase)
         :current-issue (workflow-state :current-issue)))
 
-;;; ─── Cursor ────────────────────────────────────────────────────────────────
-
-(defun cursor-path ()
-  (merge-pathnames "cursor" (pathname *config-dir*)))
-
-(defun read-cursor ()
-  "Read the last processed issue number from the cursor file.
-   If no cursor exists, estimates a starting point from the latest
-   quicklisp-projects issue number minus a buffer of 20."
-  (handler-case
-      (let ((text (string-trim '(#\Newline #\Space #\Return)
-                               (uiop:read-file-string (cursor-path)))))
-        (when (plusp (length text))
-          (return-from read-cursor (parse-integer text))))
-    (error () nil))
-  ;; No cursor -- find the oldest unhandled open issue
-  (llog:info "No cursor file found, scanning for oldest unhandled issue...")
-  (handler-case
-      (block found
-        (let ((page 1))
-          (loop
-            (let ((issues (gh-api "/repos/quicklisp/quicklisp-projects/issues"
-                                  :parameters (list :state "open"
-                                                    :per-page "100"
-                                                    :sort "created"
-                                                    :direction "asc"
-                                                    :page (princ-to-string page)))))
-              (when (null issues) (return-from found 0))
-              (dolist (issue issues)
-                (let* ((num (getf issue :number))
-                       (title (or (getf issue :title) ""))
-                       (name (let ((pos (search "add " title :test #'char-equal)))
-                               (when pos
-                                 (string-downcase
-                                  (string-trim " " (subseq title (+ pos 4)))))))
-                       (status (when (and name (plusp (length name)))
-                                 (handler-case
-                                     (progn
-                                       (gh-api (format nil "/orgs/ocicl/packages/container/~A" name))
-                                       :published)
-                                   (error () :not-found)))))
-                  (when (eq status :not-found)
-                    (llog:info (format nil "First unhandled issue: #~D (~A)" num name))
-                    (return-from found (max 0 (1- num))))))
-              (when (< (length issues) 100) (return-from found 0))
-              (incf page)))))
-    (error (e)
-      (llog:error (format nil "Error bootstrapping cursor: ~A" e))
-      0)))
-
-(defun write-cursor (issue-number)
-  "Update the cursor file with the new highest issue number."
-  (with-open-file (s (cursor-path) :direction :output :if-exists :supersede)
-    (format s "~D~%" issue-number)))
+(defquery build-ocicl-package progress ()
+  (list :phase (workflow-state :phase)))
 
 ;;; ─── Runner ────────────────────────────────────────────────────────────────
-
-(defvar *engine* nil)
 
 (defun db-path ()
   (namestring (merge-pathnames "ocicl-bot.db" (pathname *data-dir*))))
 
-(defun run (&key since)
-  "Run the ingest workflow. Reads the cursor file for the starting issue
-   number unless SINCE is provided. If a previous run is still RUNNING
-   in the DB, resumes it instead of starting a new one."
+(defun run ()
+  "Start the scanner workflow. Builder workflows are enqueued automatically."
   (when *engine*
     (ignore-errors (stop-engine *engine*)))
   (ensure-directories-exist (db-path))
   (setf *engine* (make-engine :db-path (db-path)))
-  ;; Check if make-engine already resumed a RUNNING workflow
+  ;; Check if make-engine already resumed RUNNING workflows
   (let ((contexts (cl-workflow::workflow-engine-contexts *engine*)))
     (when (plusp (hash-table-count contexts))
-      (llog:info "Resuming previous run from DB")
+      (llog:info (format nil "Resumed ~D running workflow(s) from DB"
+                         (hash-table-count contexts)))
       (return-from run :resumed)))
-  ;; No running workflow -- start a new one
-  (let* ((since-issue (or since (read-cursor)))
-         (run-id (start-workflow *engine* 'ingest-quicklisp-requests
-                                 :input (list since-issue))))
-    (llog:info (format nil "Processing issues after #~D (run: ~A)" since-issue run-id))
+  ;; Start the scanner
+  (let ((run-id (start-workflow *engine* 'scan-quicklisp-issues
+                                :input nil)))
+    (llog:info (format nil "Started scanner (run: ~A)" run-id))
     run-id))
 
-(defun wait-and-save-cursor ()
-  "Block until the current workflow completes, then update the cursor."
+(defun wait-for-completion ()
+  "Block until all workflows (scanner + builders) complete."
   (loop
     (sleep 5)
     (let ((contexts (cl-workflow::workflow-engine-contexts *engine*)))
       (when (zerop (hash-table-count contexts))
-        ;; All workflows finished -- find the result
-        (let* ((runs (cl-workflow::db-list-workflow-runs
-                      (cl-workflow::workflow-engine-db *engine*) :limit 1))
-               (run-id (when runs (first (first runs))))
-               (run (when run-id
-                      (cl-workflow::db-get-workflow-run
-                       (cl-workflow::workflow-engine-db *engine*) run-id)))
-               (result (when run (getf run :result))))
-          (let ((status (when run (getf run :status))))
-            (cond
-              ((and result (equal status "COMPLETED"))
-               (let ((highest (getf result :highest-issue)))
-                 (when (and highest (plusp highest))
-                   (write-cursor highest)
-                   (llog:info (format nil "Cursor updated to #~D" highest))))
-               (llog:info (format nil "Workflow completed: ~D issues, ~D created"
-                                  (or (getf result :issues-processed) 0)
-                                  (or (getf result :repos-created) 0))))
-              ((equal status "FAILED")
-               (llog:error (format nil "Workflow FAILED: ~A"
-                                   (or (when run (getf run :error-message)) "unknown error"))))
-              (t
-               (llog:warn (format nil "Workflow ended with status: ~A" status)))))
-          (return))))))
+        ;; Check for any failed workflows
+        (let ((failed (cl-workflow::db-list-workflow-runs
+                       (cl-workflow::workflow-engine-db *engine*))))
+          (dolist (run failed)
+            (destructuring-bind (run-id wid wtype status started closed) run
+              (declare (ignore wid wtype started closed))
+              (when (string= status "FAILED")
+                (let ((info (cl-workflow::db-get-workflow-run
+                             (cl-workflow::workflow-engine-db *engine*) run-id)))
+                  (llog:error (format nil "FAILED ~A: ~A"
+                                     run-id (or (getf info :error-message) "?"))))))))
+        (llog:info "All workflows complete")
+        (return)))))
