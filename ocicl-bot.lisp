@@ -119,28 +119,40 @@
   "Clone a repo into TARGET-DIR."
   (legit:clone (authed-clone-url url) target-dir))
 
+(defun run-git-in (dir &rest args)
+  "Run git with ARGS in directory DIR."
+  (uiop:run-program (cons "git" args)
+                     :directory (pathname dir)
+                     :output '(:string :stripped t)
+                     :error-output '(:string :stripped t)))
+
 (defun git-add-commit-push (repo-dir message)
   "Stage all, commit as ocicl-bot, push."
-  (let ((repo (legit:init repo-dir :if-does-not-exist :load)))
-    ;; Set bot identity
-    (legit:git-config "user.name" "ocicl-bot[bot]")
-    (legit:git-config "user.email"
-                      (format nil "~A+ocicl-bot[bot]@users.noreply.github.com"
-                              *github-app-id*))
-    ;; Ensure remote uses authed URL for push
-    (let* ((token (get-installation-token))
-           (old-url (legit:remote-url repo)))
-      (when (and old-url (search "github.com" old-url))
-        (multiple-value-bind (match groups)
-            (cl-ppcre:scan-to-strings "github\\.com[/:](.+?)(?:\\.git)?$" old-url)
-          (when match
-            (legit:git-remote :set-url :name "origin"
-                              :newurl (format nil "https://x-access-token:~A@github.com/~A.git"
-                                             token (aref groups 0)))))))
-    (legit:add repo :all)
-    (when (legit:changed-p repo)
-      (legit:commit repo message)
-      (legit:push repo))))
+  ;; Set bot identity
+  (run-git-in repo-dir "config" "user.name" "ocicl-bot[bot]")
+  (run-git-in repo-dir "config" "user.email"
+              (format nil "~A+ocicl-bot[bot]@users.noreply.github.com" *github-app-id*))
+  ;; Set authed remote URL
+  (let* ((token (get-installation-token))
+         (old-url (run-git-in repo-dir "remote" "get-url" "origin")))
+    (when (search "github.com" old-url)
+      (multiple-value-bind (match groups)
+          (cl-ppcre:scan-to-strings "github\\.com[/:](.+?)(?:\\.git)?$" old-url)
+        (when match
+          (run-git-in repo-dir "remote" "set-url" "origin"
+                      (format nil "https://x-access-token:~A@github.com/~A.git"
+                              token (aref groups 0)))))))
+  ;; Stage, commit, push
+  (run-git-in repo-dir "add" "-A")
+  (handler-case
+      (progn
+        (run-git-in repo-dir "diff" "--cached" "--quiet")
+        ;; No changes
+        nil)
+    (error ()
+      ;; There are changes
+      (run-git-in repo-dir "commit" "-m" message)
+      (run-git-in repo-dir "push" "-u" "origin" "main"))))
 
 (defun clean-admin-dir (admin-dir name lc-name)
   "Remove stale checkout directories (handles case variants)."
@@ -175,7 +187,7 @@
                                              :per-page "100"
                                              :sort "created"
                                              :direction "asc"
-                                             :page (princ-to-string page))))))
+                                             :page (princ-to-string page)))))
         (when (null batch) (return))
         (dolist (issue batch)
           (let ((num (getf issue :number)))
