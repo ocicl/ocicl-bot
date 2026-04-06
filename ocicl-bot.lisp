@@ -372,7 +372,7 @@ SKIP: <reason>"
               ;; Try a simple git ls-remote
               (handler-case
                   (progn
-                    (uiop:run-program (list "git" "ls-remote" "--exit-code" url "HEAD")
+                    (uiop:run-program (list "env" "GIT_TERMINAL_PROMPT=0" "git" "ls-remote" "--exit-code" url "HEAD")
                                       :output nil :error-output nil)
                     (setf (getf result :reachable) t))
                 (error () nil)))))))
@@ -380,7 +380,7 @@ SKIP: <reason>"
     (unless (getf result :reachable)
       (handler-case
           (progn
-            (uiop:run-program (list "git" "ls-remote" "--exit-code" url "HEAD")
+            (uiop:run-program (list "env" "GIT_TERMINAL_PROMPT=0" "git" "ls-remote" "--exit-code" url "HEAD")
                               :output nil :error-output nil)
             (setf (getf result :reachable) t))
         (error () nil)))
