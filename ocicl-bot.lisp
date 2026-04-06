@@ -702,40 +702,38 @@ SOFTWARE.
             (t
              (setf (gethash pname seen-projects) num)
 
-             ;; Step 2: Validate upstream repo
-             (let ((validation (execute-activity 'validate-upstream-repo
-                                 :input (list purl))))
+             ;; Step 2: Check ocicl status (fast path: check local list first, saves API calls)
+             (let ((status (if (member pname existing-systems :test #'string-equal)
+                               :published
+                               (execute-activity 'check-ocicl-status
+                                 :input (list pname)))))
                (cond
-                 ((not (getf validation :reachable))
+                 ((eq status :published)
                   (execute-activity 'log-result
-                    :input (list num pname "REJECTED" "Upstream repo is unreachable")))
+                    :input (list num pname "ALREADY_EXISTS" "Package already published")))
 
-                 ((getf validation :is-fork)
+                 ((eq status :repo-ok)
                   (execute-activity 'log-result
-                    :input (list num pname "REJECTED"
-                                 "Repo is a fork -- use the canonical upstream instead")))
+                    :input (list num pname "REPO_OK" "Repo exists with valid README.org")))
 
-                 (t
-                  ;; Log license warning (non-blocking)
-                  (unless (getf validation :has-license)
-                    (execute-activity 'log-result
-                      :input (list num pname "WARNING" "No license detected in upstream repo")))
-
-                  ;; Step 3: Check ocicl status
-                  (let ((status (execute-activity 'check-ocicl-status
-                                  :input (list pname))))
+                 ((or (eq status :none) (eq status :repo-empty) (eq status :repo-broken))
+                  ;; Step 3: Validate upstream repo (only for new/broken, saves API calls)
+                  (let ((validation (execute-activity 'validate-upstream-repo
+                                      :input (list purl))))
                     (cond
-                      ((eq status :published)
+                      ((not (getf validation :reachable))
                        (execute-activity 'log-result
-                         :input (list num pname "ALREADY_EXISTS" "Package already published")))
-
-                      ((eq status :repo-ok)
+                         :input (list num pname "REJECTED" "Upstream repo is unreachable")))
+                      ((getf validation :is-fork)
                        (execute-activity 'log-result
-                         :input (list num pname "REPO_OK" "Repo exists with valid README.org")))
-
-                      ((or (eq status :none) (eq status :repo-empty) (eq status :repo-broken))
+                         :input (list num pname "REJECTED"
+                                      "Repo is a fork -- use the canonical upstream instead")))
+                      (t
+                       (unless (getf validation :has-license)
+                         (execute-activity 'log-result
+                           :input (list num pname "WARNING" "No license detected")))
                        ;; Step 4: Clone and discover systems
-                         (handler-case
+                       (handler-case
                              (let* ((discovered (execute-activity 'clone-and-find-systems
                                                   :input (list pname purl)))
                                     (systems (getf discovered :systems))
