@@ -183,6 +183,11 @@
     "cl" "common-lisp" "keyword" "common-lisp-user" "cl-user")
   "System names that must never be registered -- they collide with CL builtins.")
 
+(defparameter *skip-project-names*
+  '("qlot" "quicklisp" "quicklisp-client" "quicklisp-slime-helper"
+    "quickdist" "quickdocs" "quickproject")
+  "Project names to skip -- qlot/quicklisp ecosystem tools not relevant to ocicl.")
+
 ;;; ─── Activities ────────────────────────────────────────────────────────────
 
 (defactivity fetch-new-ql-issues ((since-issue-number integer))
@@ -673,6 +678,11 @@ SOFTWARE.
             ((or (null pname) (zerop (length pname)) (null purl) (zerop (length purl)))
              (execute-activity 'log-result
                :input (list num "?" "SKIPPED" "Missing name or URL")))
+
+            ;; Skip quicklisp/qlot ecosystem projects
+            ((member pname *skip-project-names* :test #'string-equal)
+             (execute-activity 'log-result
+               :input (list num pname "SKIPPED" "Quicklisp/qlot ecosystem project")))
 
             ;; Duplicate issue detection (same project in this batch)
             ((gethash pname seen-projects)
