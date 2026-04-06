@@ -766,11 +766,34 @@ SOFTWARE.
   (merge-pathnames "cursor" (pathname *config-dir*)))
 
 (defun read-cursor ()
-  "Read the last processed issue number from the cursor file. Returns 0 if missing."
+  "Read the last processed issue number from the cursor file.
+   If no cursor exists, estimates a starting point from the latest
+   quicklisp-projects issue number minus a buffer of 20."
   (handler-case
-      (parse-integer (string-trim '(#\Newline #\Space #\Return)
-                                  (uiop:read-file-string (cursor-path))))
-    (error () 0)))
+      (let ((text (string-trim '(#\Newline #\Space #\Return)
+                               (uiop:read-file-string (cursor-path)))))
+        (when (plusp (length text))
+          (return-from read-cursor (parse-integer text))))
+    (error () nil))
+  ;; No cursor -- bootstrap from latest issue
+  (format t "No cursor file found, bootstrapping...~%")
+  (handler-case
+      (let* ((issues (gh-api "/repos/quicklisp/quicklisp-projects/issues"
+                             :parameters (list :state "open"
+                                               :per-page "1"
+                                               :sort "created"
+                                               :direction "desc")))
+             (latest (when issues (getf (first issues) :number))))
+        (if latest
+            (let ((start (max 0 (- latest 20))))
+              (format t "Latest issue is #~D, starting from #~D~%" latest start)
+              start)
+            (progn
+              (format t "Could not fetch issues, starting from 0~%")
+              0)))
+    (error (e)
+      (format t "Error bootstrapping cursor: ~A, starting from 0~%" e)
+      0)))
 
 (defun write-cursor (issue-number)
   "Atomically update the cursor file with the new highest issue number."
