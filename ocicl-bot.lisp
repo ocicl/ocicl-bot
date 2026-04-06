@@ -661,7 +661,7 @@ SOFTWARE.
     (start-workflow *engine* 'build-ocicl-package
                     :workflow-id wf-id
                     :input (list issue-number title body))
-    (llog:info (format nil "Enqueued build for issue #~D" issue-number))
+    (llog:info (format nil "Enqueued build for issue #~D: ~A" issue-number title))
     wf-id))
 
 ;;; ─── Scanner Workflow ──────────────────────────────────────────────────────
@@ -672,6 +672,7 @@ SOFTWARE.
   (let ((systems (execute-activity 'fetch-ocicl-systems-list :input nil))
         (consecutive-known 0)
         (stop-after 10)
+        (skipped 0)
         (enqueued 0))
     (setf (workflow-state :phase) :scanning)
     (block scan-done
@@ -690,18 +691,21 @@ SOFTWARE.
                        ((and quick-name
                              (member quick-name systems :test #'string-equal))
                         (incf consecutive-known)
-                        (llog:info (format nil "Known: #~D ~A (~D/~D)"
-                                          num quick-name consecutive-known stop-after))
+                        (incf skipped)
                         (when (>= consecutive-known stop-after)
+                          (llog:info (format nil "Stopping: ~D consecutive known (skipped ~D total)"
+                                            consecutive-known skipped))
                           (return-from scan-done)))
                        ;; Skip quicklisp/qlot ecosystem
                        ((and quick-name
                              (member quick-name *skip-project-names* :test #'string-equal))
-                        (llog:info (format nil "Skip qlot/quicklisp: #~D ~A" num quick-name))
+                        (incf skipped)
                         (setf consecutive-known 0))
                        ;; Unknown or can't parse title -- enqueue a build
                        (t
+                        (llog:info (format nil "Skipped ~D known projects" skipped))
                         (setf consecutive-known 0)
+                        (setf skipped 0)
                         (execute-activity 'enqueue-build
                           :input (list num title body))
                         (incf enqueued)))))
