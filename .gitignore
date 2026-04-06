@@ -1,0 +1,7 @@
+*~
+.#*
+ocicl/
+*.db
+*.db-wal
+*.db-shm
+*.fasl
