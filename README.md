@@ -67,7 +67,7 @@ podman build -t ocicl-bot -f Containerfile .
 ## Prerequisites
 
 - GitHub App "ocicl-bot" installed on the ocicl org
-- [Gemini CLI](https://github.com/google-gemini/gemini-cli) for LLM parsing
+- `GEMINI_API_KEY` environment variable (or `~/.local/etc/ocicl-bot/gemini-api-key` file)
 
 ## Author and License
 

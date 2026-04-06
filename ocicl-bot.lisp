@@ -88,18 +88,18 @@
   (ensure-github-auth)
   (github:api-command endpoint :method method :body body :parameters parameters))
 
-;;; ─── Shell helper (only for LLM CLI) ───────────────────────────────────────
+;;; ─── LLM Provider ──────────────────────────────────────────────────────────
 
-(defun sh (fmt &rest args)
-  "Run a shell command, return stdout as a string."
-  (let ((cmd (apply #'format nil fmt args)))
-    (multiple-value-bind (output error-output exit-code)
-        (uiop:run-program cmd :output '(:string :stripped t)
-                              :error-output '(:string :stripped t)
-                              :ignore-error-status t)
-      (unless (zerop exit-code)
-        (error "Command failed (~D): ~A~%~A" exit-code cmd error-output))
-      output)))
+(defvar *llm-provider* nil)
+
+(defun ensure-llm-provider ()
+  "Initialize the Gemini LLM provider if needed."
+  (unless *llm-provider*
+    (let ((api-key (or (uiop:getenv "GEMINI_API_KEY")
+                       (error "GEMINI_API_KEY environment variable required"))))
+      (setf *llm-provider*
+            (make-instance 'completions:gemini-completer :api-key api-key))))
+  *llm-provider*)
 
 ;;; ─── Git helpers (via legit) ───────────────────────────────────────────────
 
@@ -189,7 +189,7 @@
     (nreverse issues)))
 
 (defactivity parse-issue-with-llm ((issue-number integer) (title string) (body string))
-  "Use Gemini CLI to extract project name and git URL from an issue."
+  "Use Gemini via cl-completions to extract project name and git URL from an issue."
   :retry-policy (:max-attempts 2 :initial-interval 5)
   :timeout 120
   (let* ((prompt (format nil "Extract the project information from this GitHub issue requesting a new Common Lisp project be added to quicklisp.
@@ -216,12 +216,7 @@ Otherwise set it to OK.
 If this is not a request to add a new project (e.g., it's a rename request, removal request, or bug report), respond with exactly:
 SKIP: <reason>"
                          issue-number title body))
-         (tmpfile (format nil "/tmp/ocicl-ingest-prompt-~A.txt" issue-number))
-         (response (progn
-                     (with-open-file (s tmpfile :direction :output :if-exists :supersede)
-                       (write-string prompt s))
-                     (prog1 (sh "gemini < ~A 2>/dev/null" tmpfile)
-                       (ignore-errors (delete-file tmpfile))))))
+         (response (completions:get-completion (ensure-llm-provider) prompt)))
     (cond
       ((search "SKIP:" response)
        (list :skip t :reason (string-trim " " (subseq response (+ (search "SKIP:" response) 5)))))
