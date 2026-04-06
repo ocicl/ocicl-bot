@@ -21,7 +21,7 @@
 
 ;;; ─── Logging ───────────────────────────────────────────────────────────────
 
-(defvar *log* (llog:make-logger :name "ocicl-bot" :level llog:+info+))
+(setf llog:*logger* (llog:make-logger :name "ocicl-bot" :level llog:+info+))
 
 ;;; ─── Paths (overridable via env vars) ──────────────────────────────────────
 
@@ -76,7 +76,7 @@
          (token (cdr (assoc "token" parsed :test #'string=))))
     (unless token
       (error "Failed to get installation token: ~A" body))
-    (llog:info *log* "GitHub installation token acquired")
+    (llog:info "GitHub installation token acquired")
     (setf *github-token* token)
     (setf *github-token-expires* (+ (get-universal-time) 3000))
     token))
@@ -207,7 +207,7 @@
         (when (< (length batch) 100) (return))
         (incf page)))
     (let ((result (nreverse issues)))
-      (llog:info *log* "Fetched ~D new issues (since #~D)" (length result) since-issue-number)
+      (llog:info (format nil "Fetched ~D new issues (since #~D)" (length result) since-issue-number))
       result)))
 
 (defactivity parse-issue-with-llm ((issue-number integer) (title string) (body string))
@@ -239,7 +239,7 @@ If this is not a request to add a new project (e.g., it's a rename request, remo
 SKIP: <reason>"
                          issue-number title body))
          (response (progn
-                     (llog:debug *log* "Parsing issue #~D with LLM" issue-number)
+                     (llog:debug (format nil "Parsing issue #~D with LLM" issue-number))
                      (completions:get-completion (ensure-llm-provider) prompt))))
     (cond
       ((search "SKIP:" response)
@@ -560,7 +560,7 @@ SOFTWARE.
     (git-clone-repo (format nil "https://github.com/ocicl/~A.git" lc-name) repo-dir)
     (populate-ocicl-repo-dir (pathname repo-dir) lc-name url description systems)
     (git-add-commit-push repo-dir "Fix repo: add standard structure")
-    (llog:info *log* "Fixed ocicl/~A" lc-name)
+    (llog:info (format nil "Fixed ocicl/~A" lc-name))
     (format nil "Fixed ocicl/~A" lc-name)))
 
 (defactivity create-ocicl-repo ((name string) (url string) (description string)
@@ -581,7 +581,7 @@ SOFTWARE.
     (git-clone-repo (format nil "https://github.com/ocicl/~A.git" lc-name) repo-dir)
     (populate-ocicl-repo-dir (pathname repo-dir) lc-name url description systems)
     (git-add-commit-push repo-dir (format nil "Add ~A" lc-name))
-    (llog:info *log* "Created ocicl/~A" lc-name)
+    (llog:info (format nil "Created ocicl/~A" lc-name))
     (format nil "Created ocicl/~A" lc-name)))
 
 (defactivity update-systems-list ((systems-to-add list))
@@ -614,11 +614,11 @@ SOFTWARE.
   :timeout 10
   (cond
     ((string= status "FAILED")
-     (llog:error *log* "~A: ~A" status detail :issue issue-number :project name))
+     (llog:error (format nil "~A: ~A" status detail) :issue issue-number :project name))
     ((or (string= status "REJECTED") (string= status "WARNING") (string= status "NEEDS_REVIEW"))
-     (llog:warn *log* "~A: ~A" status detail :issue issue-number :project name))
+     (llog:warn (format nil "~A: ~A" status detail) :issue issue-number :project name))
     (t
-     (llog:info *log* "~A: ~A" status detail :issue issue-number :project name)))
+     (llog:info (format nil "~A: ~A" status detail) :issue issue-number :project name)))
   t)
 
 ;;; ─── Workflow ──────────────────────────────────────────────────────────────
@@ -801,7 +801,7 @@ SOFTWARE.
           (return-from read-cursor (parse-integer text))))
     (error () nil))
   ;; No cursor -- find the oldest unhandled open issue
-  (llog:info *log* "No cursor file found, scanning for oldest unhandled issue...")
+  (llog:info "No cursor file found, scanning for oldest unhandled issue...")
   (handler-case
       (block found
         (let ((page 1))
@@ -827,12 +827,12 @@ SOFTWARE.
                                        :published)
                                    (error () :not-found)))))
                   (when (eq status :not-found)
-                    (llog:info *log* "First unhandled issue: #~D (~A)" num name)
+                    (llog:info (format nil "First unhandled issue: #~D (~A)" num name))
                     (return-from found (max 0 (1- num))))))
               (when (< (length issues) 100) (return-from found 0))
               (incf page)))))
     (error (e)
-      (llog:error *log* "Error bootstrapping cursor: ~A, starting from 0" e)
+      (llog:error (format nil "Error bootstrapping cursor: ~A" e))
       0)))
 
 (defun write-cursor (issue-number)
@@ -859,7 +859,7 @@ SOFTWARE.
     (setf *engine* (make-engine :db-path (db-path)))
     (let ((run-id (start-workflow *engine* 'ingest-quicklisp-requests
                                   :input (list since-issue))))
-      (llog:info *log* "Processing issues after #~D (run: ~A)" since-issue run-id)
+      (llog:info (format nil "Processing issues after #~D (run: ~A)" since-issue run-id))
       run-id)))
 
 (defun wait-and-save-cursor ()
@@ -880,5 +880,5 @@ SOFTWARE.
             (let ((highest (getf result :highest-issue)))
               (when (and highest (plusp highest))
                 (write-cursor highest)
-                (llog:info *log* "Cursor updated to #~D" highest))))
+                (llog:info (format nil "Cursor updated to #~D" highest)))))
           (return))))))
