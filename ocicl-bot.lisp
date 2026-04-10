@@ -884,12 +884,14 @@ SOFTWARE.
   (ensure-directories-exist (db-path))
   (load-seen-issues)
   (setf *engine* (make-engine :db-path (db-path)))
-  ;; Check if make-engine already resumed RUNNING workflows
+  ;; If make-engine resumed RUNNING workflows, let them drain first
   (let ((contexts (cl-workflow::workflow-engine-contexts *engine*)))
     (when (plusp (hash-table-count contexts))
       (llog:info (format nil "Resumed ~D running workflow(s) from DB"
                          (hash-table-count contexts)))
-      (return-from run :resumed)))
+      (loop while (plusp (hash-table-count
+                          (cl-workflow::workflow-engine-contexts *engine*)))
+            do (sleep 2))))
   ;; Start the scanner
   (let ((run-id (start-workflow *engine* 'scan-quicklisp-issues
                                 :input nil)))
