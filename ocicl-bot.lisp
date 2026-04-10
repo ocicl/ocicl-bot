@@ -163,10 +163,16 @@
 
 (defun run-git-in (dir &rest args)
   "Run git with ARGS in directory DIR."
-  (uiop:run-program (cons "git" args)
-                     :directory (pathname dir)
-                     :output '(:string :stripped t)
-                     :error-output '(:string :stripped t)))
+  (multiple-value-bind (stdout stderr exit-code)
+      (uiop:run-program (cons "git" args)
+                         :directory (pathname dir)
+                         :output '(:string :stripped t)
+                         :error-output '(:string :stripped t)
+                         :ignore-error-status t)
+    (unless (zerop exit-code)
+      (error "Executing git command~%  (git ~{~A~^ ~})~%failed with exit code ~D. Git reported:~%  ~A"
+             args exit-code (or stderr stdout "")))
+    stdout))
 
 (defun git-add-commit-push (repo-dir message)
   "Stage all, commit as ocicl-bot, push."
