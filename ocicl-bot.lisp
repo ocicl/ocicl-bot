@@ -608,8 +608,8 @@ SOFTWARE.
 (defactivity create-ocicl-repo ((name string) (url string) (description string)
                                  (systems string))
   "Create the ocicl repo on GitHub with the standard structure."
-  :retry-policy (:max-attempts 2 :initial-interval 10)
-  :timeout 180
+  :retry-policy (:max-attempts 3 :initial-interval 30 :backoff-coefficient 2.0)
+  :timeout 300
   (let* ((admin-dir *ocicl-admin-home*)
          (lc-name (string-downcase name))
          (repo-dir (format nil "~A/~A/" admin-dir lc-name)))
@@ -619,8 +619,10 @@ SOFTWARE.
     (handler-case
         (gh-api "/orgs/ocicl/repos" :method :post
                 :body (list :name lc-name :public t))
-      (error () nil))  ; may already exist
-    (sleep 5)  ; give GitHub time to propagate the new repo
+      (cl-github::api-error (e)
+        (unless (= (cl-github::error-http-status e) 422)  ; 422 = already exists
+          (error e))))
+    (sleep 15)  ; give GitHub time to propagate the new repo
     (git-clone-repo (format nil "https://github.com/ocicl/~A.git" lc-name) repo-dir)
     (populate-ocicl-repo-dir (pathname repo-dir) lc-name url description systems)
     (git-add-commit-push repo-dir (format nil "Add ~A" lc-name))
@@ -768,8 +770,6 @@ SOFTWARE.
 (defworkflow build-ocicl-package ((issue-number integer) (title string) (body string))
   "Process a single quicklisp-projects issue: parse, validate, create ocicl repo."
   (setf (workflow-state :phase) :parsing)
-  ;; Mark this issue as seen so we never re-process it
-  (execute-activity 'mark-issue-seen-activity :input (list issue-number))
 
   ;; Step 1: Parse with LLM
   (let* ((parsed (execute-activity 'parse-issue-with-llm
@@ -778,24 +778,29 @@ SOFTWARE.
          (purl  (when parsed (getf parsed :url)))
          (desc  (or (when parsed (getf parsed :description)) "")))
 
-    ;; Early exits
+    ;; Early exits -- mark issue seen so we don't re-process intentional skips
     (when (null parsed)
+      (execute-activity 'mark-issue-seen-activity :input (list issue-number))
       (return-from build-ocicl-package
         (execute-activity 'log-result
           :input (list issue-number "?" "SKIPPED" "Could not parse issue"))))
     (when (getf parsed :skip)
+      (execute-activity 'mark-issue-seen-activity :input (list issue-number))
       (return-from build-ocicl-package
         (execute-activity 'log-result
           :input (list issue-number "?" "SKIPPED" (getf parsed :reason)))))
     (when (or (zerop (length pname)) (null purl) (zerop (length purl)))
+      (execute-activity 'mark-issue-seen-activity :input (list issue-number))
       (return-from build-ocicl-package
         (execute-activity 'log-result
           :input (list issue-number "?" "SKIPPED" "Missing name or URL"))))
     (when (member pname *skip-project-names* :test #'string-equal)
+      (execute-activity 'mark-issue-seen-activity :input (list issue-number))
       (return-from build-ocicl-package
         (execute-activity 'log-result
           :input (list issue-number pname "SKIPPED" "Quicklisp/qlot ecosystem"))))
     (when (eq (getf parsed :content-flag) :review)
+      (execute-activity 'mark-issue-seen-activity :input (list issue-number))
       (return-from build-ocicl-package
         (execute-activity 'log-result
           :input (list issue-number pname "NEEDS_REVIEW" "Content policy flag"))))
@@ -807,6 +812,7 @@ SOFTWARE.
                        :published
                        (execute-activity 'check-ocicl-status :input (list pname)))))
       (when (or (eq status :published) (eq status :repo-ok))
+        (execute-activity 'mark-issue-seen-activity :input (list issue-number))
         (return-from build-ocicl-package
           (execute-activity 'log-result
             :input (list issue-number pname "EXISTS" "Already in ocicl"))))
@@ -815,10 +821,12 @@ SOFTWARE.
       (setf (workflow-state :phase) :validating)
       (let ((validation (execute-activity 'validate-upstream-repo :input (list purl))))
         (when (not (getf validation :reachable))
+          (execute-activity 'mark-issue-seen-activity :input (list issue-number))
           (return-from build-ocicl-package
             (execute-activity 'log-result
               :input (list issue-number pname "REJECTED" "Upstream unreachable"))))
         (when (getf validation :is-fork)
+          (execute-activity 'mark-issue-seen-activity :input (list issue-number))
           (return-from build-ocicl-package
             (execute-activity 'log-result
               :input (list issue-number pname "REJECTED" "Repo is a fork"))))
@@ -835,6 +843,7 @@ SOFTWARE.
         ;; Step 5: Check for reserved/colliding names
         (let ((reserved (execute-activity 'check-reserved-names :input (list systems))))
           (when reserved
+            (execute-activity 'mark-issue-seen-activity :input (list issue-number))
             (return-from build-ocicl-package
               (execute-activity 'log-result
                 :input (list issue-number pname "REJECTED"
@@ -842,6 +851,7 @@ SOFTWARE.
         (let ((collisions (execute-activity 'check-system-name-collisions
                             :input (list systems ocicl-systems))))
           (when collisions
+            (execute-activity 'mark-issue-seen-activity :input (list issue-number))
             (return-from build-ocicl-package
               (execute-activity 'log-result
                 :input (list issue-number pname "REJECTED"
@@ -861,6 +871,8 @@ SOFTWARE.
 
         ;; Step 7: Update systems list
         (execute-activity 'update-systems-list :input (list systems))
+        ;; Mark seen only after all work succeeds
+        (execute-activity 'mark-issue-seen-activity :input (list issue-number))
         (setf (workflow-state :phase) :done)))))
 
 ;;; ─── Query Handlers ────────────────────────────────────────────────────────

@@ -3,12 +3,20 @@
 #
 # Usage:
 #   curl -sL https://raw.githubusercontent.com/ocicl/ocicl-bot/main/install-and-run.sh | sh
+#   ./install-and-run.sh --rebuild   # force rebuild of container image
 #
 # Prerequisites:
 #   - podman (or docker)
 #   - GitHub App private key at ~/.local/etc/ocicl-bot/app-key.pem
 
 set -e
+
+FORCE_REBUILD=false
+for arg in "$@"; do
+  case "$arg" in
+    --rebuild) FORCE_REBUILD=true ;;
+  esac
+done
 
 CONFIG_DIR="${OCICL_BOT_CONFIG:-$HOME/.local/etc/ocicl-bot}"
 DATA_DIR="${OCICL_BOT_DATA:-$HOME/.local/share/ocicl-bot}"
@@ -50,17 +58,26 @@ if [ ! -f "$CONFIG_DIR/app-key.pem" ]; then
   exit 1
 fi
 
-# Pull latest image
-echo "Pulling $IMAGE..."
-$RUNTIME pull "$IMAGE" 2>/dev/null || {
-  # Image not published yet -- build locally
-  echo "Image not in registry, building locally..."
+# Build or pull image
+if [ "$FORCE_REBUILD" = true ]; then
+  echo "Rebuilding image from source..."
   TMPDIR=$(mktemp -d)
   git clone --depth 1 https://github.com/ocicl/ocicl-bot.git "$TMPDIR"
-  $RUNTIME build -t ocicl-bot -f "$TMPDIR/Containerfile" "$TMPDIR"
+  $RUNTIME build --no-cache -t ocicl-bot -f "$TMPDIR/Containerfile" "$TMPDIR"
   rm -rf "$TMPDIR"
   IMAGE="ocicl-bot"
-}
+else
+  echo "Pulling $IMAGE..."
+  $RUNTIME pull "$IMAGE" 2>/dev/null || {
+    # Image not published yet -- build locally
+    echo "Image not in registry, building locally..."
+    TMPDIR=$(mktemp -d)
+    git clone --depth 1 https://github.com/ocicl/ocicl-bot.git "$TMPDIR"
+    $RUNTIME build -t ocicl-bot -f "$TMPDIR/Containerfile" "$TMPDIR"
+    rm -rf "$TMPDIR"
+    IMAGE="ocicl-bot"
+  }
+fi
 
 # Run
 echo "Running ocicl-bot..."
