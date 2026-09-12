@@ -933,6 +933,38 @@ SOFTWARE.
 (defun db-path ()
   (namestring (merge-pathnames "ocicl-bot.db" (pathname *data-dir*))))
 
+(defparameter *run-retention-days* 30
+  "Closed workflow runs older than this are pruned from the DB.")
+
+(defun iso8601-cutoff (days-ago)
+  "ISO-8601 UTC timestamp string for DAYS-AGO days before now."
+  (multiple-value-bind (sec min hour day month year)
+      (decode-universal-time (- (get-universal-time) (* days-ago 86400)) 0)
+    (format nil "~4,'0D-~2,'0D-~2,'0DT~2,'0D:~2,'0D:~2,'0DZ"
+            year month day hour min sec)))
+
+(defun prune-old-workflow-runs ()
+  "Delete closed workflow runs older than *RUN-RETENTION-DAYS* days,
+   along with their events, tasks, timers and signals, then VACUUM."
+  (let* ((handle (cl-workflow::db-handle
+                  (cl-workflow::workflow-engine-db *engine*)))
+         (cutoff (iso8601-cutoff *run-retention-days*))
+         (old-runs "SELECT run_id FROM workflow_runs
+                    WHERE status != 'RUNNING'
+                      AND closed_at IS NOT NULL AND closed_at < ?")
+         (count (sqlite:execute-single
+                 handle (format nil "SELECT COUNT(*) FROM (~A)" old-runs) cutoff)))
+    (when (plusp count)
+      (dolist (table '("events" "activity_tasks" "timers" "signals"))
+        (sqlite:execute-non-query
+         handle (format nil "DELETE FROM ~A WHERE run_id IN (~A)" table old-runs)
+         cutoff))
+      (sqlite:execute-non-query
+       handle (format nil "DELETE FROM workflow_runs WHERE run_id IN (~A)" old-runs)
+       cutoff)
+      (sqlite:execute-non-query handle "VACUUM")
+      (llog:info (format nil "Pruned ~D old workflow run~:P" count)))))
+
 (defun run ()
   "Start the scanner workflow. Builder workflows are enqueued automatically."
   (when *engine*
@@ -977,5 +1009,8 @@ SOFTWARE.
                              (cl-workflow::workflow-engine-db *engine*) run-id)))
                   (llog:error (format nil "FAILED ~A: ~A"
                                      run-id (or (getf info :error-message) "?"))))))))
+        (handler-case (prune-old-workflow-runs)
+          (error (e)
+            (llog:error (format nil "Pruning old workflow runs failed: ~A" e))))
         (llog:info "All workflows complete")
         (return)))))
