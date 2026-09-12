@@ -21,7 +21,7 @@ ADMIN_DIR="${OCICL_ADMIN_HOME:-$HOME/ocicl-admin}"
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$ADMIN_DIR"
 
 exec podman run --rm \
-  -v "$CONFIG_DIR":/config \
-  -v "$DATA_DIR":/data \
-  -v "$ADMIN_DIR":/ocicl-admin \
+  -v "$CONFIG_DIR":/config:Z \
+  -v "$DATA_DIR":/data:Z \
+  -v "$ADMIN_DIR":/ocicl-admin:Z \
   ocicl-bot

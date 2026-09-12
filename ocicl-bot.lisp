@@ -24,6 +24,8 @@
 (setf llog:*logger* (llog:make-logger :name "ocicl-bot" :level llog:+info+))
 
 (defvar *engine* nil "The cl-workflow engine instance.")
+(defvar *previous-run-ids* (make-hash-table :test 'equal)
+  "Run IDs that existed in the DB before this session started.")
 
 ;;; ─── Paths (overridable via env vars) ──────────────────────────────────────
 
@@ -203,7 +205,19 @@
       ;; Ensure we're on main branch (empty repos may not have one)
       (handler-case (run-git-in repo-dir "branch" "-M" "main")
         (error () nil))
-      (run-git-in repo-dir "push" "-u" "origin" "main"))))
+      ;; Push with pull-rebase retry to handle concurrent updates
+      (loop for attempt from 1 to 5
+            do (handler-case
+                   (progn
+                     (run-git-in repo-dir "push" "-u" "origin" "main")
+                     (return))
+                 (error (e)
+                   (if (< attempt 5)
+                       (progn
+                         (llog:info (format nil "Push attempt ~D failed, pulling with rebase and retrying" attempt))
+                         (run-git-in repo-dir "pull" "--rebase" "origin" "main")
+                         (sleep 2))
+                       (error e))))))))
 
 (defun clean-admin-dir (admin-dir name lc-name)
   "Remove stale checkout directories (handles case variants)."
@@ -636,28 +650,37 @@ SOFTWARE.
     (format nil "Created ocicl/~A" lc-name)))
 
 (defactivity update-systems-list ((systems-to-add list))
-  "Add new system names to all-ocicl-systems.txt."
-  :retry-policy (:max-attempts 2 :initial-interval 5)
-  :timeout 120
-  (let ((repo-dir (format nil "/tmp/ocicl-systems-list-~A/" (get-universal-time))))
-    (unwind-protect
-         (progn
-           (git-clone-repo "https://github.com/ocicl/request-system-additions-here.git" repo-dir)
-           (let ((list-file (merge-pathnames "all-ocicl-systems.txt" (pathname repo-dir))))
-             ;; Append new systems
-             (with-open-file (s list-file :direction :output :if-exists :append)
-               (dolist (sys systems-to-add)
-                 (format s "~A~%" sys)))
-             ;; Sort and deduplicate in-place
-             (let* ((lines (uiop:read-file-lines list-file))
-                    (sorted (remove-duplicates (sort lines #'string<) :test #'string=)))
-               (with-open-file (s list-file :direction :output :if-exists :supersede)
-                 (dolist (line sorted)
-                   (when (plusp (length line))
-                     (format s "~A~%" line))))))
-           (git-add-commit-push repo-dir "Add new systems"))
-      (ignore-errors
-        (uiop:delete-directory-tree (pathname repo-dir) :validate t)))))
+  "Add new system names to all-ocicl-systems.txt via the GitHub Contents API."
+  :retry-policy (:max-attempts 3 :initial-interval 5 :backoff-coefficient 2.0)
+  :timeout 60
+  (loop for attempt from 1 to 5
+        do (let* ((content-info (gh-api "/repos/ocicl/request-system-additions-here/contents/all-ocicl-systems.txt"))
+                  (encoded (getf content-info :content))
+                  (file-sha (getf content-info :sha))
+                  (decoded (sb-ext:octets-to-string
+                            (cl-base64:base64-string-to-usb8-array
+                             (remove #\Newline encoded))
+                            :external-format :utf-8))
+                  (existing (remove-if (lambda (s) (zerop (length s)))
+                                       (uiop:split-string decoded :separator '(#\Newline))))
+                  (merged (remove-duplicates
+                           (sort (append existing systems-to-add) #'string<)
+                           :test #'string=))
+                  (new-content (format nil "~{~A~%~}" merged))
+                  (new-encoded (cl-base64:usb8-array-to-base64-string
+                                (sb-ext:string-to-octets new-content :external-format :utf-8))))
+             (handler-case
+                 (progn
+                   (gh-api "/repos/ocicl/request-system-additions-here/contents/all-ocicl-systems.txt"
+                           :method :put
+                           :body (list :message "Add new systems"
+                                       :content new-encoded
+                                       :sha file-sha))
+                   (return))
+               (error (e)
+                 (if (< attempt 5)
+                     (sleep 2)
+                     (error e)))))))
 
 (defactivity mark-issue-seen-activity ((issue-number integer))
   "Mark an issue as processed."
@@ -902,6 +925,11 @@ SOFTWARE.
   (ensure-directories-exist (db-path))
   (load-seen-issues)
   (setf *engine* (make-engine :db-path (db-path)))
+  ;; Record pre-existing runs so we don't re-report old failures
+  (clrhash *previous-run-ids*)
+  (dolist (run (cl-workflow::db-list-workflow-runs
+                (cl-workflow::workflow-engine-db *engine*)))
+    (setf (gethash (first run) *previous-run-ids*) t))
   ;; If make-engine resumed RUNNING workflows, let them drain first
   (let ((contexts (cl-workflow::workflow-engine-contexts *engine*)))
     (when (plusp (hash-table-count contexts))
@@ -928,7 +956,8 @@ SOFTWARE.
           (dolist (run failed)
             (destructuring-bind (run-id wid wtype status started closed) run
               (declare (ignore wid wtype started closed))
-              (when (string= status "FAILED")
+              (when (and (string= status "FAILED")
+                         (not (gethash run-id *previous-run-ids*)))
                 (let ((info (cl-workflow::db-get-workflow-run
                              (cl-workflow::workflow-engine-db *engine*) run-id)))
                   (llog:error (format nil "FAILED ~A: ~A"
