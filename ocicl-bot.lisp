@@ -714,12 +714,27 @@ SOFTWARE.
                             :direction "desc"
                             :page (princ-to-string page))))
 
+(defun sanitize-project-name (name)
+  "Normalize NAME to a valid GitHub repo name: downcase, whitespace runs
+   become single hyphens. Returns NIL if the result is empty or still
+   contains characters outside [a-z0-9._-]."
+  (let* ((trimmed (string-trim " " (string-downcase (or name ""))))
+         (words (remove-if (lambda (s) (zerop (length s)))
+                           (uiop:split-string trimmed :separator '(#\Space #\Tab))))
+         (hyphenated (format nil "~{~A~^-~}" words)))
+    (when (and (plusp (length hyphenated))
+               (every (lambda (c)
+                        (or (char<= #\a c #\z) (char<= #\0 c #\9)
+                            (member c '(#\- #\_ #\.))))
+                      hyphenated))
+      hyphenated)))
+
 (defun extract-name-from-title (title)
-  "Extract project name from 'Please add X' title. Returns lowercase name or NIL."
+  "Extract project name from 'Please add X' title. Returns sanitized
+   lowercase name or NIL."
   (let ((pos (search "add " (or title "") :test #'char-equal)))
     (when pos
-      (let ((name (string-downcase (string-trim " " (subseq title (+ pos 4))))))
-        (when (plusp (length name)) name)))))
+      (sanitize-project-name (subseq title (+ pos 4))))))
 
 (defactivity enqueue-build ((issue-number integer) (title string) (body string))
   "Start a build-ocicl-package workflow for this issue."
@@ -803,7 +818,7 @@ SOFTWARE.
   ;; Step 1: Parse with LLM
   (let* ((parsed (execute-activity 'parse-issue-with-llm
                    :input (list issue-number title body)))
-         (pname (when parsed (string-downcase (or (getf parsed :name) ""))))
+         (pname (when parsed (or (sanitize-project-name (getf parsed :name)) "")))
          (purl  (when parsed (getf parsed :url)))
          (desc  (or (when parsed (getf parsed :description)) "")))
 
@@ -822,7 +837,7 @@ SOFTWARE.
       (execute-activity 'mark-issue-seen-activity :input (list issue-number))
       (return-from build-ocicl-package
         (execute-activity 'log-result
-          :input (list issue-number "?" "SKIPPED" "Missing name or URL"))))
+          :input (list issue-number "?" "SKIPPED" "Missing or invalid name/URL"))))
     (when (member pname *skip-project-names* :test #'string-equal)
       (execute-activity 'mark-issue-seen-activity :input (list issue-number))
       (return-from build-ocicl-package
