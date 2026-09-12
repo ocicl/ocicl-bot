@@ -5,3 +5,8 @@ ocicl/
 *.db-wal
 *.db-shm
 *.fasl
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/

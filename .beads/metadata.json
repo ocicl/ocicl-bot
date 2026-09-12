@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "ocicl_bot",
+  "project_id": "ec703767-e11b-4f58-a72b-0cba1c190fcc"
+}
